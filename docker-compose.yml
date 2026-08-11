@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  op_agent:
+    build: .
+    container_name: op_agent_container
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./playbooks:/app/playbooks
+      - ./scratch:/app/scratch
+    env_file:
+      - .env
+    restart: always

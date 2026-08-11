@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FNX-OP AI Chatbot Assistant</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Marked.js Markdown Parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0d0f14;
+            --panel-bg: #151922;
+            --panel-border: #222b3c;
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --accent-cyan: #06b6d4;
+            --accent-purple: #a855f7;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            
+            --risk-high: #ef4444;
+            --risk-medium: #f59e0b;
+            --risk-low: #10b981;
+            --risk-info: #3b82f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            background-image: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 40%),
+                              radial-gradient(circle at 90% 80%, rgba(6, 182, 212, 0.05) 0%, transparent 40%);
+        }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #2a3447;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3f4e6b;
+        }
+
+        /* Main Container */
+        .dashboard-container {
+            display: flex;
+            flex: 1;
+            height: 100vh;
+            padding: 30px;
+            gap: 30px;
+        }
+
+        /* Left Panel - Control & Playbook */
+        .left-panel {
+            width: 450px;
+            background-color: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+            gap: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(10px);
+        }
+
+        .brand-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-logo {
+            background: linear-gradient(135deg, var(--primary), var(--accent-cyan));
+            color: white;
+            font-weight: 700;
+            font-size: 1.2rem;
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+            font-family: 'Outfit', sans-serif;
+        }
+
+        .brand-title h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.25rem;
+            font-weight: 600;
+            background: linear-gradient(to right, #ffffff, #a8b2c4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .section-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .editor-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        textarea {
+            width: 100%;
+            flex: 1;
+            background-color: #0b0d13;
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            color: var(--text-main);
+            padding: 15px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            resize: none;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        textarea:focus {
+            border-color: var(--primary);
+        }
+
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn:hover {
+            background-color: var(--primary-hover);
+        }
+
+        /* Right Panel - Backdrop Workspace Mockup */
+        .workspace-backdrop {
+            flex: 1;
+            background-color: rgba(21, 25, 34, 0.4);
+            border: 1px dashed var(--panel-border);
+            border-radius: 16px;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            position: relative;
+        }
+
+        .backdrop-header {
+            position: absolute;
+            top: 40px;
+            left: 40px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .backdrop-header span {
+            width: 8px;
+            height: 8px;
+            background-color: var(--risk-low);
+            border-radius: 50%;
+        }
+
+        .backdrop-logo {
+            font-size: 4rem;
+            margin-bottom: 20px;
+            opacity: 0.3;
+        }
+
+        .backdrop-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #e5e7eb;
+        }
+
+        .backdrop-desc {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            max-width: 450px;
+            line-height: 1.6;
+        }
+
+        /* Floating Chat Widget Toggle Button */
+        .chat-widget-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary), var(--accent-purple));
+            box-shadow: 0 8px 30px rgba(99, 102, 241, 0.4);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 100;
+        }
+
+        .chat-widget-btn:hover {
+            transform: scale(1.08) translateY(-3px);
+            box-shadow: 0 12px 35px rgba(99, 102, 241, 0.6);
+        }
+
+        .chat-widget-btn svg {
+            width: 28px;
+            height: 28px;
+            fill: white;
+            transition: transform 0.3s;
+        }
+
+        .chat-widget-btn.active svg {
+            transform: rotate(90deg);
+        }
+
+        /* Chat Window Widget */
+        .chat-window {
+            position: fixed;
+            bottom: 105px;
+            right: 30px;
+            width: 480px;
+            height: 650px;
+            background-color: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            box-shadow: 0 15px 45px rgba(0, 0, 0, 0.35);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 100;
+            transform: scale(0.85) translateY(50px);
+            opacity: 0;
+            pointer-events: none;
+            transition: all 0.25s cubic-bezier(0.165, 0.84, 0.44, 1);
+        }
+
+        .chat-window.open {
+            transform: scale(1) translateY(0);
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, var(--panel-bg), #1c2230);
+            border-bottom: 1px solid var(--panel-border);
+            padding: 18px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .chat-header-user {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .chat-avatar {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary), var(--accent-cyan));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: white;
+            font-size: 0.95rem;
+            position: relative;
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.2);
+        }
+
+        .chat-avatar-dot {
+            width: 10px;
+            height: 10px;
+            background-color: var(--risk-low);
+            border: 2px solid var(--panel-bg);
+            border-radius: 50%;
+            position: absolute;
+            bottom: 0;
+            right: 0;
+        }
+
+        .chat-header-info h3 {
+            font-size: 0.92rem;
+            font-weight: 600;
+            color: #f3f4f6;
+        }
+
+        .chat-header-info p {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+        }
+
+        /* Message List */
+        .chat-messages {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            background-color: #0b0d13;
+        }
+
+        .msg {
+            display: flex;
+            flex-direction: column;
+            max-width: 85%;
+            animation: messageFade 0.25s ease-out;
+        }
+
+        @keyframes messageFade {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .msg-user {
+            align-self: flex-end;
+        }
+
+        .msg-bot {
+            align-self: flex-start;
+        }
+
+        .msg-bubble {
+            padding: 12px 18px;
+            border-radius: 14px;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            word-wrap: break-word;
+        }
+
+        .msg-user .msg-bubble {
+            background-color: var(--primary);
+            color: white;
+            border-bottom-right-radius: 2px;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.2);
+        }
+
+        .msg-bot .msg-bubble {
+            background-color: #1b212f;
+            color: var(--text-main);
+            border-bottom-left-radius: 2px;
+            border: 1px solid var(--panel-border);
+        }
+
+        /* Markdown formatting inside bubble */
+        .msg-bot .msg-bubble p {
+            margin-bottom: 10px;
+        }
+        .msg-bot .msg-bubble p:last-child {
+            margin-bottom: 0;
+        }
+        .msg-bot .msg-bubble h3, .msg-bot .msg-bubble h4 {
+            font-family: 'Outfit', sans-serif;
+            margin-top: 15px;
+            margin-bottom: 8px;
+            color: #ffffff;
+        }
+        .msg-bot .msg-bubble h3:first-child, .msg-bot .msg-bubble h4:first-child {
+            margin-top: 0;
+        }
+        .msg-bot .msg-bubble ul, .msg-bot .msg-bubble ol {
+            padding-left: 20px;
+            margin-bottom: 10px;
+        }
+        .msg-bot .msg-bubble li {
+            margin-bottom: 4px;
+        }
+        .msg-bot .msg-bubble hr {
+            border: 0;
+            border-top: 1px solid var(--panel-border);
+            margin: 15px 0;
+        }
+        .msg-bot .msg-bubble code {
+            background-color: #0b0d13;
+            color: var(--accent-cyan);
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+        .msg-bot .msg-bubble details {
+            margin-top: 10px;
+            background-color: #0b0d13;
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            padding: 10px;
+        }
+        .msg-bot .msg-bubble summary {
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            outline: none;
+        }
+        .msg-bot .msg-bubble summary:hover {
+            color: var(--text-main);
+        }
+        .msg-bot .msg-bubble details blockquote {
+            margin-top: 8px;
+            padding-left: 12px;
+            border-left: 3px solid var(--primary);
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+
+        .msg-time {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            margin-top: 5px;
+            margin-left: 4px;
+        }
+
+        .msg-user .msg-time {
+            align-self: flex-end;
+            margin-right: 4px;
+        }
+
+        /* Input area */
+        .chat-input-area {
+            padding: 20px;
+            border-top: 1px solid var(--panel-border);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background-color: var(--panel-bg);
+        }
+
+        .attachment-preview-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(99, 102, 241, 0.05);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 0.78rem;
+            color: var(--primary);
+            animation: previewSlide 0.2s ease-out;
+        }
+
+        @keyframes previewSlide {
+            from { transform: translateY(10px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .attachment-clear {
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 1rem;
+            color: var(--text-muted);
+        }
+        .attachment-clear:hover {
+            color: var(--risk-high);
+        }
+
+        .input-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .input-btn {
+            background-color: #1b212f;
+            border: 1px solid var(--panel-border);
+            color: var(--text-muted);
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .input-btn:hover {
+            color: var(--text-main);
+            border-color: #3b4861;
+            background-color: #242c3d;
+        }
+
+        .file-input {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .chat-input {
+            flex: 1;
+            background-color: #0b0d13;
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            color: var(--text-main);
+            padding: 11px 15px;
+            font-size: 0.85rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .chat-input:focus {
+            border-color: var(--primary);
+        }
+
+        /* Loading indicator */
+        .loading-dots {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .loading-dots span {
+            width: 6px;
+            height: 6px;
+            background-color: var(--text-muted);
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1.0); }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <!-- Left Panel: Playbook Configuration -->
+        <div class="left-panel">
+            <div class="brand-group">
+                <div class="brand-logo">OP</div>
+                <div class="brand-title">
+                    <h1>Trợ lý Thẩm định FNX-OP</h1>
+                </div>
+            </div>
+
+            <div class="editor-container">
+                <div class="section-title">
+                    Quy chuẩn / Playbook Công ty
+                </div>
+                <textarea id="playbook-editor" placeholder="Đang tải playbook quy chuẩn..."></textarea>
+                <button class="btn" id="save-playbook-btn">
+                    <svg style="width: 16px; height: 16px; fill: white;" viewBox="0 0 24 24">
+                        <path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/>
+                    </svg>
+                    Lưu cấu hình Playbook
+                </button>
+            </div>
+        </div>
+
+        <!-- Right Panel: Blank application backdrop -->
+        <div class="workspace-backdrop">
+            <div class="backdrop-header">
+                <span></span>
+                Không gian làm việc FNX-OP (Mockup)
+            </div>
+            <div class="backdrop-logo">🖥️</div>
+            <div class="backdrop-title">FNX Operation Center</div>
+            <div class="backdrop-desc">
+                Cấu hình Playbook nghiệp vụ bên cột trái để lập hệ quy chiếu. Nhấp vào bong bóng chatbot màu tím ở góc phải bên dưới để thực hiện đối chiếu tài liệu và trò chuyện với Trợ lý AI.
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Chat Widget Button -->
+    <div class="chat-widget-btn" id="chat-toggle">
+        <svg viewBox="0 0 24 24">
+            <path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/>
+        </svg>
+    </div>
+
+    <!-- Chat Window -->
+    <div class="chat-window" id="chat-window">
+        <div class="chat-header">
+            <div class="chat-header-user">
+                <div class="chat-avatar">
+                    AI
+                    <div class="chat-avatar-dot"></div>
+                </div>
+                <div class="chat-header-info">
+                    <h3>Trợ lý Thẩm định OP_Agent</h3>
+                    <p>Hệ thống tự động hỗ trợ vận phòng</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-messages" id="chat-messages">
+            <!-- Bot greeting -->
+            <div class="msg msg-bot">
+                <div class="msg-bubble">
+                    Xin chào! Mình là Trợ lý AI FNX-OP. Bạn có thể hỏi mình về playbook công ty hoặc đính kèm file tài liệu ở nút kẹp giấy bên dưới để mình thẩm định nhé!
+                </div>
+                <div class="msg-time">Vừa xong</div>
+            </div>
+        </div>
+
+        <div class="chat-input-area">
+            <!-- Attachment bar -->
+            <div class="attachment-preview-bar" id="attachment-bar" style="display: none;">
+                <span id="attachment-filename">filename.pdf</span>
+                <span class="attachment-clear" id="attachment-clear-btn">&times;</span>
+            </div>
+
+            <div class="input-row">
+                <!-- Attachment Button -->
+                <div class="input-btn">
+                    <svg style="width: 20px; height: 20px; fill: currentColor;" viewBox="0 0 24 24">
+                        <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-3.31 2.69-6 6-6s6 2.69 6 6v10c0 4.42-3.58 8-8 8s-8-3.58-8-8V4h2v11c0 3.31 2.69 6 6 6s6-2.69 6-6V5c0-2.21-1.79-4-4-4s-4 1.79-4 4v12.5c0 1.1.9 2 2 2s2-.9 2-2V6h2z"/>
+                    </svg>
+                    <input type="file" class="file-input" id="chat-file-uploader">
+                </div>
+                <!-- Input field -->
+                <input type="text" class="chat-input" id="chat-input-text" placeholder="Nhập tin nhắn hoặc đính kèm file...">
+                <!-- Send Button -->
+                <button class="btn" id="chat-send-btn" style="padding: 10px 15px;">
+                    Gửi
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const session_id = "session-simplified-chat-widget-2026";
+        let activeAttachment = null;
+        let pollingInterval = null;
+
+        // Elements
+        const playbookEditor = document.getElementById('playbook-editor');
+        const savePlaybookBtn = document.getElementById('save-playbook-btn');
+        const chatToggle = document.getElementById('chat-toggle');
+        const chatWindow = document.getElementById('chat-window');
+        const chatMessages = document.getElementById('chat-messages');
+        const chatInputText = document.getElementById('chat-input-text');
+        const chatSendBtn = document.getElementById('chat-send-btn');
+        const chatFileUploader = document.getElementById('chat-file-uploader');
+        const attachmentBar = document.getElementById('attachment-bar');
+        const attachmentFilename = document.getElementById('attachment-filename');
+        const attachmentClearBtn = document.getElementById('attachment-clear-btn');
+
+        // Initialize
+        async function init() {
+            // Load Playbook
+            try {
+                const res = await fetch('/api/playbook');
+                const data = await res.json();
+                playbookEditor.value = data.content;
+            } catch (e) {
+                console.error("Lỗi khi tải Playbook: ", e);
+            }
+        }
+
+        // Save Playbook
+        savePlaybookBtn.addEventListener('click', async () => {
+            savePlaybookBtn.innerText = "Đang lưu...";
+            try {
+                await fetch('/api/playbook', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: playbookEditor.value })
+                });
+                alert("Lưu Playbook thành công!");
+            } catch (e) {
+                alert("Lỗi khi lưu Playbook: " + e);
+            } finally {
+                savePlaybookBtn.innerText = "Lưu cấu hình Playbook";
+            }
+        });
+
+        // Chat Widget Toggle
+        chatToggle.addEventListener('click', () => {
+            chatWindow.classList.toggle('open');
+            chatToggle.classList.toggle('active');
+        });
+
+        // File Uploader inside Chat
+        chatFileUploader.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            // Temporarily update chat button icon or text as uploading
+            attachmentFilename.innerText = "Đang upload: " + file.name;
+            attachmentBar.style.display = 'flex';
+
+            try {
+                const res = await fetch('/api/upload-file', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                
+                activeAttachment = { name: data.name, url: data.url };
+                attachmentFilename.innerText = data.name;
+            } catch (e) {
+                alert("Lỗi tải file lên server: " + e);
+                activeAttachment = null;
+                attachmentBar.style.display = 'none';
+            }
+        });
+
+        // Clear attachment
+        attachmentClearBtn.addEventListener('click', () => {
+            activeAttachment = null;
+            attachmentBar.style.display = 'none';
+            chatFileUploader.value = '';
+        });
+
+        // Append message
+        function appendMessage(sender, text, isMarkdown = false) {
+            const msg = document.createElement('div');
+            msg.className = `msg msg-${sender}`;
+            
+            let bubbleContent = text;
+            if (isMarkdown && window.marked) {
+                // Parse markdown to HTML safely using marked library
+                bubbleContent = marked.parse(text);
+            } else {
+                // Escape simple HTML
+                bubbleContent = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+            }
+
+            msg.innerHTML = `
+                <div class="msg-bubble">${bubbleContent}</div>
+                <div class="msg-time">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+            `;
+            chatMessages.appendChild(msg);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return msg;
+        }
+
+        // Send Chat
+        chatSendBtn.addEventListener('click', sendMessage);
+        chatInputText.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        async function sendMessage() {
+            const text = chatInputText.value.trim();
+            if (!text && !activeAttachment) return;
+
+            // Show user message
+            let userDisplay = text;
+            if (activeAttachment) {
+                userDisplay += `\n[Đính kèm: ${activeAttachment.name}]`;
+            }
+            appendMessage('user', userDisplay);
+            chatInputText.value = '';
+
+            // Loading placeholder for bot response
+            const loader = document.createElement('div');
+            loader.className = 'msg msg-bot';
+            loader.id = 'chat-loader';
+            loader.innerHTML = `
+                <div class="msg-bubble loading-dots">
+                    <span></span><span></span><span></span>
+                </div>
+            `;
+            chatMessages.appendChild(loader);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            // Build payload
+            const payload = {
+                session_id: session_id,
+                user: { id: "user-simplified", email: "user@fnx.vn", name: "Đinh Thị Thúy Quỳnh" },
+                message: { text: text, timestamp: Math.floor(Date.now() / 1000) },
+                attachments: activeAttachment ? [{
+                    id: "file-chat-id",
+                    name: activeAttachment.name,
+                    url: activeAttachment.url,
+                    size: 1024,
+                    mime_type: "application/octet-stream"
+                }] : [],
+                context: { list_id: "column-action-cards" }
+            };
+
+            // Clear active attachment
+            activeAttachment = null;
+            attachmentBar.style.display = 'none';
+            chatFileUploader.value = '';
+
+            try {
+                const res = await fetch('/api/webhook/chat', {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer fnx-op-secret-token-2026'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                
+                // Remove loading bubble
+                document.getElementById('chat-loader').remove();
+                
+                // Show Navigator's reply
+                appendMessage('bot', data.message, true);
+
+                // If processing started, trigger polling
+                if (data.status === 'processing') {
+                    startPollingResult();
+                }
+            } catch (e) {
+                if (document.getElementById('chat-loader')) {
+                    document.getElementById('chat-loader').remove();
+                }
+                appendMessage('bot', "Lỗi kết nối: " + e);
+            }
+        }
+
+        // Polling loop for heavy background pipeline result
+        function startPollingResult() {
+            // Append temporary status indicator message
+            const progressBubble = appendMessage('bot', "🤖 **Hệ thống đang chạy ngầm dây chuyền thẩm định...**\n- Bước 1: Trích xuất thực tế (Scanner)\n- Bước 2: Đối chiếu playbook (Builder)\n- Bước 3: Tranh biện chéo (Challenger vs Judge)\nVui lòng không gửi thêm tin nhắn.");
+            
+            if (pollingInterval) clearInterval(pollingInterval);
+
+            pollingInterval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/api/session-status?session_id=${session_id}`);
+                    const data = await res.json();
+
+                    if (data.state === 'COMPLETED' && data.result) {
+                        // Clear interval
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+
+                        // Replace progressBubble text or add final report
+                        progressBubble.remove();
+                        appendMessage('bot', data.result, true);
+                    } else if (data.state === 'NAVIGATING' && !data.result) {
+                        // Means pipeline failed or reset without returning results
+                        clearInterval(pollingInterval);
+                        pollingInterval = null;
+                        progressBubble.remove();
+                        appendMessage('bot', "⚠️ Có lỗi xảy ra trong quá trình thẩm định tài liệu. Vui lòng thử lại.");
+                    }
+                } catch (e) {
+                    console.error("Lỗi khi polling: ", e);
+                }
+            }, 2000);
+        }
+
+        init();
+    </script>
+</body>
+</html>
