@@ -121,5 +121,7 @@ conda-env/
 schema.json
 *.tar
 env.txt
+dockerfile.txt
+
 
 
