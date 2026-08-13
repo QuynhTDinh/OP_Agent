@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Sao chép mã nguồn và cấu hình
 COPY agent_op/ ./agent_op/
 COPY playbooks/ ./playbooks/
-COPY test_schemas.py test_pipeline_logic.py test_planka_client.py test_pipeline.py cli_tester.py ./
+
 
 # Tạo thư mục scratch cho dữ liệu tạm và mount volume
 RUN mkdir -p scratch
