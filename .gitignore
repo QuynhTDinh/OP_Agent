@@ -119,3 +119,5 @@ conda-env/
 !*.example
 /scratch/
 schema.json
+*.tar
+
