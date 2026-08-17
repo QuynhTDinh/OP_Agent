@@ -18,6 +18,10 @@ class Config:
     # Webhook security
     WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "fnx-op-secret-token-2026")
 
+    # MongoDB Configuration
+    MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "op_agent_db")
+
     # LLM Models mapping (Gemini Strategy)
     MODEL_NAVIGATOR = os.getenv("MODEL_NAVIGATOR", None)
     MODEL_SCANNER = os.getenv("MODEL_SCANNER", None)

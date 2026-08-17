@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import httpx
@@ -11,12 +12,14 @@ from agent_op.pipeline import (
     run_navigator,
     execute_pipeline,
     get_session_state,
-    set_session_state,
-    get_session_result,
-    set_session_result,
-    clear_session_result
+    set_session_state
 )
-from agent_op.planka_client import PlankaClient
+from agent_op.database import (
+    save_audit_report,
+    get_audit_report,
+    clear_audit_report,
+    check_db_health
+)
 from agent_op.schemas import ActionCard
 
 # Setup logging
@@ -133,16 +136,16 @@ async def run_background_pipeline(session_id: str, doc_path: str, playbook_text:
 {audit_md}
 </details>
 """
-        # Lưu kết quả
-        set_session_result(session_id, {"result": markdown_report})
+        # Lưu kết quả vào MongoDB (với timestamp)
+        await save_audit_report(session_id, {
+            "result": markdown_report,
+            "timestamp": time.time()
+        })
+        
         # Cập nhật trạng thái thành COMPLETED để frontend biết để fetch
         set_session_state(session_id, "COMPLETED")
         
-        # Vẫn gọi Planka push card để tương thích ngược nếu cần
-        planka = PlankaClient()
-        await planka.push_action_card(list_id, card)
-        
-        logger.info(f"Chạy ngầm hoàn thành. Đã lưu kết quả cho session {session_id}.")
+        logger.info(f"Chạy ngầm hoàn thành. Đã lưu kết quả vào MongoDB cho session {session_id}.")
     except Exception as e:
         logger.error(f"Lỗi khi chạy ngầm pipeline cho session {session_id}: {e}")
         # Reset về NAVIGATING nếu có lỗi để cho phép chat lại
@@ -169,30 +172,32 @@ def read_root():
 
 
 @app.get("/api/health")
-def health_check():
+async def health_check():
+    db_healthy = await check_db_health()
     return {
-        "status": "healthy",
+        "status": "healthy" if db_healthy else "unhealthy",
         "app": "Agent OP Core Engine",
-        "mock_mode": Config.PLANKA_MOCK_MODE
+        "mock_mode": Config.PLANKA_MOCK_MODE,
+        "mongodb": "connected" if db_healthy else "disconnected"
     }
 
 
 @app.get("/api/session-status")
-def get_status(session_id: str = Query(...)):
-    """Lấy trạng thái và kết quả phân tích của session."""
+async def get_status(session_id: str = Query(...)):
+    """Lấy trạng thái và kết quả phân tích của session từ MongoDB."""
     state = get_session_state(session_id)
-    result = get_session_result(session_id)
+    doc = await get_audit_report(session_id)
     
-    # Nếu trạng thái là COMPLETED, sau khi frontend lấy xong kết quả, ta reset về NAVIGATING để user có thể tiếp tục tương tác
+    # Nếu trạng thái là COMPLETED, sau khi frontend lấy xong kết quả, ta reset về NAVIGATING và xóa khỏi DB
     if state == "COMPLETED":
         set_session_state(session_id, "NAVIGATING")
-        clear_session_result(session_id)
+        await clear_audit_report(session_id)
             
     return {
         "status": "success",
         "session_id": session_id,
         "state": state,
-        "result": result.get("result") if result else None
+        "result": doc.get("result") if doc else None
     }
 
 
@@ -352,19 +357,62 @@ async def execute_direct_pipeline(
         asyncio.create_task(run_background_pipeline(session_id, document_path, request.playbook_text, request.list_id))
         return {
             "status": "processing",
-            "message": "Đã tiếp nhận yêu cầu chạy ngầm. Thẻ Action Card sẽ được đẩy lên Planka."
+            "message": "Đã tiếp nhận yêu cầu chạy ngầm. Kết quả sẽ được lưu vào MongoDB."
         }
 
     # Chạy đồng bộ trực tiếp (tiện cho việc xem JSON trả về ở Swagger)
     try:
         card = await execute_pipeline(document_path, request.playbook_text, session_id=request.session_id)
-        # Đẩy lên Planka
-        planka = PlankaClient()
-        card_id = await planka.push_action_card(request.list_id, card)
+        
+        # Format kết quả báo cáo sang Markdown đẹp mắt
+        findings_md = ""
+        for i, tag in enumerate(card.traceability_tags, 1):
+            findings_md += f"{i}. **{tag.point}** `{tag.coordinate}`\n"
+        if not findings_md:
+            findings_md = "Không phát hiện lỗi hoặc không tìm thấy bằng chứng đối chiếu."
+
+        recs_md = ""
+        for rec in card.recommendations:
+            recs_md += f"- {rec}\n"
+        if not recs_md:
+            recs_md = "- Không có khuyến nghị thêm."
+
+        audit_md = card.audit_trail if card.audit_trail else "Không có lịch sử tranh biện chéo."
+
+        markdown_report = f"""### 📋 BÁO CÁO THẨM ĐỊNH TỰ ĐỘNG
+*   **Tiêu đề:** {card.title}
+*   **Kết luận:** {card.summary}
+*   **Mức độ Rủi ro:** **{card.risk_level}**
+*   **Cần con người xem xét:** {'Có ⚠️' if card.human_review_required else 'Không'}
+
+---
+
+#### 🔍 Chi tiết phát hiện & Tọa độ đối chiếu (Poka-Yoke)
+{findings_md}
+
+---
+
+#### 💡 Khuyến nghị / Đề xuất hành động
+{recs_md}
+
+---
+
+#### ⚔️ Biên bản tranh biện chéo (Audit Trail)
+<details>
+<summary>Xem chi tiết thảo luận giữa Challenger & Judge</summary>
+
+{audit_md}
+</details>
+"""
+        session_id = request.session_id or "direct-api-session-uuid"
+        await save_audit_report(session_id, {
+            "result": markdown_report,
+            "timestamp": time.time()
+        })
         
         return {
             "status": "success",
-            "card_id": card_id,
+            "card_id": "mongodb-saved-uuid",
             "action_card": card
         }
     except Exception as e:

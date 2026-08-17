@@ -7,6 +7,22 @@ from agent_op.schemas import ExtractionOutput, FactItem, ReportDraft, CompareIte
 
 class TestPipelineLogic(unittest.TestCase):
 
+    def setUp(self):
+        # Mock MongoDB get_db in agent_op.pipeline to run offline
+        self.mock_db = MagicMock()
+        self.mock_cursor = AsyncMock()
+        self.mock_cursor.to_list = AsyncMock(return_value=[])
+        self.mock_db["chat_history"].find.return_value.sort.return_value = self.mock_cursor
+        self.mock_db["chat_history"].insert_many = AsyncMock()
+        self.mock_db["chat_history"].delete_many = AsyncMock()
+        
+        self.patcher_db = patch("agent_op.pipeline.get_db", return_value=self.mock_db)
+        self.patcher_db.start()
+
+    def tearDown(self):
+        self.patcher_db.stop()
+
+
     @patch("agent_op.pipeline.Agent")
     async def async_test_navigator_routing_open_flow(self, mock_agent_class):
         """Kiểm tra Navigator bẻ ghi sang luồng mở / làm rõ tin nhắn"""

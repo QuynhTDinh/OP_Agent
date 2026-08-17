@@ -23,6 +23,41 @@ class TestPipelineE2E(unittest.TestCase):
         self.test_file = self.test_dir / "contract_sample.txt"
         self.test_file.write_text("Dummy content for testing", encoding="utf-8")
 
+        # Mock database storage using a local dictionary
+        self.mock_db_reports = {}
+        
+        async def mock_save(session_id, report_data):
+            self.mock_db_reports[session_id] = report_data
+            
+        async def mock_get(session_id):
+            return self.mock_db_reports.get(session_id)
+            
+        async def mock_clear(session_id):
+            if session_id in self.mock_db_reports:
+                del self.mock_db_reports[session_id]
+                
+        async def mock_health():
+            return True
+
+        # Start patchers for DB helpers
+        self.patcher_save = patch("agent_op.main.save_audit_report", new=mock_save)
+        self.patcher_get = patch("agent_op.main.get_audit_report", new=mock_get)
+        self.patcher_clear = patch("agent_op.main.clear_audit_report", new=mock_clear)
+        self.patcher_health = patch("agent_op.main.check_db_health", new=mock_health)
+        
+        self.patcher_save.start()
+        self.patcher_get.start()
+        self.patcher_clear.start()
+        self.patcher_health.start()
+
+    def tearDown(self):
+        # Stop patchers
+        self.patcher_save.stop()
+        self.patcher_get.stop()
+        self.patcher_clear.stop()
+        self.patcher_health.stop()
+
+
     def test_health_check(self):
         """Kiểm tra health check endpoint /api/health"""
         response = self.client.get("/api/health")
@@ -148,8 +183,9 @@ class TestPipelineE2E(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "success")
-        self.assertEqual(data["card_id"], "mock-card-uuid-9999")
+        self.assertEqual(data["card_id"], "mongodb-saved-uuid")
         self.assertEqual(data["action_card"]["risk_level"], "HIGH")
+
 
 if __name__ == "__main__":
     unittest.main()

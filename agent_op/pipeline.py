@@ -8,6 +8,8 @@ from google.antigravity import Agent, types
 from google.antigravity.types import Document
 
 from agent_op.config import Config
+from agent_op.database import get_db
+import time
 from agent_op.schemas import ExtractionOutput, ReportDraft, CritiqueList, JudgeDecision, ActionCard, TraceabilityTag
 from agent_op.agents import (
     get_navigator_config,
@@ -63,22 +65,47 @@ async def run_navigator(session_id: str, message: str, attachment_paths: List[st
     """
     Bước 0: OP_Navigator - Nhận tin nhắn và làm rõ yêu cầu.
     """
-    config = get_navigator_config()
-    config.conversation_id = format_conversation_id(session_id)
-    config.save_dir = str(Config.SCRATCH_DIR / "sessions")
-    config.session_continuation_mode = types.SessionContinuationMode.CREATE_OR_RESUME
+    history_text = ""
+    chat_col = None
     
-    # Ensure save directory exists
-    Path(config.save_dir).mkdir(parents=True, exist_ok=True)
+    # 1. LOAD HISTORY FROM MONGODB (WITH RISK MITIGATION)
+    try:
+        db = get_db()
+        chat_col = db["chat_history"]
+        cursor = chat_col.find({"session_id": session_id}).sort("timestamp", 1)
+        history_msgs = await cursor.to_list(length=50)
+        
+        # Build sliding window memory (limit history context to 4000 characters)
+        history_lines = []
+        accumulated_len = 0
+        for msg in reversed(history_msgs):
+            line = f"{msg['role']}: {msg['text']}\n"
+            if accumulated_len + len(line) <= 4000:
+                history_lines.insert(0, line)
+                accumulated_len += len(line)
+            else:
+                break
+        history_text = "".join(history_lines)
+    except Exception as e:
+        logger.error(f"Error loading chat history from MongoDB: {e}")
+        history_text = ""
+
+    # 2. CONSTRUCT PROMPT WITH SYSTEM BOUNDARY
+    prompt_content = ""
+    if history_text:
+        prompt_content += f"[LỊCH SỬ HỘI THOẠI GẦN NHẤT]\n{history_text}\n"
+    prompt_content += f"[TIN NHẮN MỚI CỦA USER]\nUser: {message}\n"
 
     # Compile files if any
-    chat_inputs = [message]
+    chat_inputs = [prompt_content]
     if attachment_paths:
         for path in attachment_paths:
             if Path(path).exists():
                 logger.info(f"Navigator loading attachment: {path}")
                 chat_inputs.append(Document.from_file(path))
 
+    # 3. CALL GEMINI MODEL (WITHOUT SQLITE PERSISTENCE TO GUARANTEE CONTEXT CAPPING)
+    config = get_navigator_config()
     async with Agent(config) as agent:
         response = await agent.chat(chat_inputs)
         response_text = await response.text()
@@ -88,7 +115,6 @@ async def run_navigator(session_id: str, message: str, attachment_paths: List[st
         # User has supplied enough info, extract JSON metadata if present
         metadata = {}
         try:
-            # Look for JSON payload in the response
             start_index = response_text.find("[START_PIPELINE]") + len("[START_PIPELINE]")
             json_str = response_text[start_index:].strip()
             if json_str:
@@ -101,8 +127,16 @@ async def run_navigator(session_id: str, message: str, attachment_paths: List[st
         # Clean response message
         display_message = response_text.split("[START_PIPELINE]")[0].strip()
         if not display_message:
-            display_message = "Đã nhận đủ thông tin. Hệ thống đang tiến hành kích hoạt Dây chuyền 3 bước..."
+            display_message = "Đã nhận đủ thông tin. Hệ thống đang tiến hành kích hoạt Dây chuyền 4 bước..."
             
+        # CLEAR HISTORY FOR COMPLETED NAVIGATING SESSION
+        if chat_col is not None:
+            try:
+                await chat_col.delete_many({"session_id": session_id})
+                logger.info(f"Cleared chat history in MongoDB for session: {session_id}")
+            except Exception as e:
+                logger.error(f"Error clearing chat history in MongoDB: {e}")
+
         return {
             "status": "processing",
             "session_id": session_id,
@@ -110,6 +144,27 @@ async def run_navigator(session_id: str, message: str, attachment_paths: List[st
             "metadata": metadata
         }
         
+    # 4. SAVE NEW CHAT TURNS TO MONGODB (IF NOT TRIGGERING PIPELINE)
+    if chat_col is not None:
+        try:
+            now = time.time()
+            await chat_col.insert_many([
+                {
+                    "session_id": session_id,
+                    "role": "User",
+                    "text": message,
+                    "timestamp": now
+                },
+                {
+                    "session_id": session_id,
+                    "role": "Trợ lý",
+                    "text": response_text.strip(),
+                    "timestamp": now + 0.1
+                }
+            ])
+        except Exception as e:
+            logger.error(f"Error saving chat turn to MongoDB: {e}")
+
     return {
         "status": "clarification_needed",
         "session_id": session_id,

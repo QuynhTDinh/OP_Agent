@@ -1,6 +1,13 @@
 version: '3.8'
 
 services:
+  mongodb:
+    image: mongo:6.0
+    container_name: mongodb_container
+    restart: always
+    volumes:
+      - ./mongo_data:/data/db
+
   op_agent:
     build: .
     container_name: op_agent_container
@@ -11,4 +18,6 @@ services:
       - ./scratch:/app/scratch
     env_file:
       - .env
+    depends_on:
+      - mongodb
     restart: always
