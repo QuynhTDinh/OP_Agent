@@ -122,6 +122,8 @@ schema.json
 *.tar
 env.txt
 dockerfile.txt
+mongo_data/
+
 
 
 
