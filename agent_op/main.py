@@ -90,28 +90,40 @@ async def download_attachment(attachment: AttachmentSchema) -> Path:
             raise HTTPException(status_code=400, detail=f"Không thể tải file đính kèm: {e}")
 
 
-async def run_background_pipeline(session_id: str, doc_path: str, playbook_text: str, list_id: str):
+from agent_op.pipeline import execute_pipeline, execute_fast_track
+
+async def run_background_pipeline(session_id: str, doc_path: str, playbook_text: Optional[str], list_id: str, track: str = "DEEP_TRACK"):
     """Hàm chạy ngầm xử lý pipeline đa tác tử và lưu kết quả báo cáo."""
     try:
-        # Chạy pipeline
-        card = await execute_pipeline(str(doc_path), playbook_text, session_id=session_id)
-        
-        # Format kết quả báo cáo sang Markdown đẹp mắt
-        findings_md = ""
-        for i, tag in enumerate(card.traceability_tags, 1):
-            findings_md += f"{i}. **{tag.point}** `{tag.coordinate}`\n"
-        if not findings_md:
-            findings_md = "Không phát hiện lỗi hoặc không tìm thấy bằng chứng đối chiếu."
+        if track == "FAST_TRACK":
+            # Chạy luồng Fast Track (Truyền doc_path vì nó chứa nội dung câu hỏi)
+            query = Path(doc_path).read_text(encoding="utf-8")
+            markdown_report = await execute_fast_track(query, session_id=session_id)
+            # FAST_TRACK trả về thẳng chuỗi markdown, nên ta gán trực tiếp
+            # và bỏ qua các bước format ActionCard.
+            
+        else:
+            # Chạy pipeline DEEP_TRACK (Thẩm định hoặc tra cứu phức tạp)
+            card = await execute_pipeline(str(doc_path), playbook_text, session_id=session_id)
+            
+            if playbook_text:
+                # Format kết quả báo cáo sang Markdown đẹp mắt (Cho luồng thẩm định có File)
+                findings_md = ""
+                for i, tag in enumerate(card.traceability_tags, 1):
+                    findings_md += f"{i}. **{tag.point}** `{tag.coordinate}`\n"
+                
+                if not findings_md:
+                    findings_md = "Không phát hiện lỗi hoặc không tìm thấy bằng chứng đối chiếu."
 
-        recs_md = ""
-        for rec in card.recommendations:
-            recs_md += f"- {rec}\n"
-        if not recs_md:
-            recs_md = "- Không có khuyến nghị thêm."
+                recs_md = ""
+                for rec in card.recommendations:
+                    recs_md += f"- {rec}\n"
+                if not recs_md:
+                    recs_md = "- Không có khuyến nghị thêm."
 
-        audit_md = card.audit_trail if card.audit_trail else "Không có lịch sử tranh biện chéo."
+                audit_md = card.audit_trail if card.audit_trail else "Không có lịch sử tranh biện chéo."
 
-        markdown_report = f"""### 📋 BÁO CÁO THẨM ĐỊNH TỰ ĐỘNG
+                markdown_report = f"""### 📋 BÁO CÁO THẨM ĐỊNH TỰ ĐỘNG
 *   **Tiêu đề:** {card.title}
 *   **Kết luận:** {card.summary}
 *   **Mức độ Rủi ro:** **{card.risk_level}**
@@ -131,10 +143,26 @@ async def run_background_pipeline(session_id: str, doc_path: str, playbook_text:
 
 #### ⚔️ Biên bản tranh biện chéo (Audit Trail)
 <details>
-<summary>Xem chi tiết thảo luận giữa Challenger & Judge</summary>
+<summary>Xem chi tiết thảo luận giữa Hội đồng</summary>
 
 {audit_md}
 </details>
+"""
+            else:
+                # Format kết hợp Option 1 & 3 cho Luồng phân tích chuyên sâu (Không File) (Sử dụng ConsultingReport)
+                recs_md = ""
+                for rec in card.recommendations:
+                    recs_md += f"- {rec}\n"
+                if not recs_md.strip():
+                    recs_md = "Không có đề xuất thêm."
+
+                markdown_report = f"""### {card.title}
+
+**Phân tích Chuyên sâu:**
+{card.deep_analysis}
+
+**Đề xuất Hành động:**
+{recs_md}
 """
         # Lưu kết quả vào MongoDB (với timestamp)
         await save_audit_report(session_id, {
@@ -291,25 +319,25 @@ async def webhook_chat(
         # Xác định list_id trên Planka để đẩy thẻ Action Card
         list_id = request.context.get("list_id", "default-list-id-from-webhook")
         
-        # Lấy nội dung playbook. Mặc định đọc playbook.md hoặc dùng playbook cấu hình
-        playbook_text = "Thẩm định theo quy chuẩn hoạt động công ty."
-        playbook_file = Config.PLAYBOOKS_DIR / "playbook.md"
-        if playbook_file.exists():
-            playbook_text = playbook_file.read_text(encoding="utf-8")
-
-        # Xác định đường dẫn tài liệu cần thẩm định (file vừa tải hoặc được truyền)
-        doc_path = downloaded_paths[0] if downloaded_paths else ""
-        if not doc_path and "document" in navigator_res.get("metadata", {}):
-            doc_path = navigator_res["metadata"]["document"]
-
-        if not doc_path:
-            # Nếu Navigator báo đủ nhưng thực tế không có file, quay lại làm rõ
-            set_session_state(session_id, "NAVIGATING")
-            return {
-                "status": "clarification_needed",
-                "session_id": session_id,
-                "message": "Không tìm thấy file tài liệu đính kèm để thẩm định. Vui lòng đính kèm file tài liệu cần thẩm định."
-            }
+        metadata = navigator_res.get("metadata", {})
+        track = metadata.get("track", "DEEP_TRACK")
+        playbook_text = None
+        doc_path = ""
+        
+        # Nếu có đính kèm file, nó được coi là Thẩm định tài liệu (Cần Playbook)
+        if downloaded_paths:
+            playbook_file = Config.PLAYBOOKS_DIR / "playbook.md"
+            if playbook_file.exists():
+                playbook_text = playbook_file.read_text(encoding="utf-8")
+            else:
+                playbook_text = "Thẩm định theo quy chuẩn hoạt động công ty."
+            doc_path = downloaded_paths[0]
+        else:
+            # Không có file, luồng câu hỏi chay. Tạo file ảo chứa câu hỏi.
+            query_dir = Config.SCRATCH_DIR / "queries"
+            query_dir.mkdir(parents=True, exist_ok=True)
+            doc_path = str(query_dir / f"{session_id}.txt")
+            Path(doc_path).write_text(request.message.text, encoding="utf-8")
 
         # Đẩy công việc nặng vào hàng đợi chạy ngầm (FastAPI Background Tasks)
         background_tasks.add_task(
@@ -317,7 +345,8 @@ async def webhook_chat(
             session_id, 
             doc_path, 
             playbook_text, 
-            list_id
+            list_id,
+            track
         )
         
     return navigator_res

@@ -850,10 +850,14 @@
                 const data = await res.json();
                 
                 // Remove loading bubble
-                document.getElementById('chat-loader').remove();
+                if (document.getElementById('chat-loader')) {
+                    document.getElementById('chat-loader').remove();
+                }
                 
-                // Show Navigator's reply
-                appendMessage('bot', data.message, true);
+                // Show Navigator's reply if it's not empty
+                if (data.message && data.message.trim() !== "") {
+                    appendMessage('bot', data.message, true);
+                }
 
                 // If processing started, trigger polling
                 if (data.status === 'processing') {
@@ -869,8 +873,17 @@
 
         // Polling loop for heavy background pipeline result
         function startPollingResult() {
-            // Append temporary status indicator message
-            const progressBubble = appendMessage('bot', "🤖 **Hệ thống đang chạy ngầm dây chuyền thẩm định...**\n- Bước 1: Trích xuất thực tế (Scanner)\n- Bước 2: Đối chiếu playbook (Builder)\n- Bước 3: Tranh biện chéo (Challenger vs Judge)\nVui lòng không gửi thêm tin nhắn.");
+            // Hiển thị loading indicator thay vì tin nhắn text dài
+            const loader = document.createElement('div');
+            loader.className = 'msg msg-bot';
+            loader.id = 'pipeline-loader';
+            loader.innerHTML = `
+                <div class="msg-bubble loading-dots">
+                    <span></span><span></span><span></span>
+                </div>
+            `;
+            chatMessages.appendChild(loader);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
             
             if (pollingInterval) clearInterval(pollingInterval);
 
@@ -884,14 +897,18 @@
                         clearInterval(pollingInterval);
                         pollingInterval = null;
 
-                        // Replace progressBubble text or add final report
-                        progressBubble.remove();
+                        // Replace loading bubble with final report
+                        if (document.getElementById('pipeline-loader')) {
+                            document.getElementById('pipeline-loader').remove();
+                        }
                         appendMessage('bot', data.result, true);
                     } else if (data.state === 'NAVIGATING' && !data.result) {
-                        // Means pipeline failed or reset without returning results
+                        // Crashed or aborted
                         clearInterval(pollingInterval);
                         pollingInterval = null;
-                        progressBubble.remove();
+                        if (document.getElementById('pipeline-loader')) {
+                            document.getElementById('pipeline-loader').remove();
+                        }
                         appendMessage('bot', "⚠️ Có lỗi xảy ra trong quá trình thẩm định tài liệu. Vui lòng thử lại.");
                     }
                 } catch (e) {

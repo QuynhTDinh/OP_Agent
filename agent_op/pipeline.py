@@ -1,23 +1,23 @@
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Union
 import asyncio
 
-from google.antigravity import Agent, types
+from google.antigravity import Agent, types, LocalAgentConfig
 from google.antigravity.types import Document
 
 from agent_op.config import Config
 from agent_op.database import get_db
 import time
-from agent_op.schemas import ExtractionOutput, ReportDraft, CritiqueList, JudgeDecision, ActionCard, TraceabilityTag
+from agent_op.schemas import ExtractionOutput, ReportDraft, CrossCritique, ActionCard, TraceabilityTag, ConsultingReport
 from agent_op.agents import (
     get_navigator_config,
     get_scanner_config,
-    get_builder_config,
+    get_builder_alpha_config,
+    get_builder_beta_config,
     get_challenger_config,
-    get_judge_config,
-    get_judge_decision_config
+    get_judge_config
 )
 
 logger = logging.getLogger("agent_op.pipeline")
@@ -108,26 +108,24 @@ async def run_navigator(session_id: str, message: str, attachment_paths: List[st
     config = get_navigator_config()
     async with Agent(config) as agent:
         response = await agent.chat(chat_inputs)
-        response_text = await response.text()
+        data = await response.structured_output()
         
-    # Check for routing signal: [START_PIPELINE]
-    if "[START_PIPELINE]" in response_text:
-        # User has supplied enough info, extract JSON metadata if present
-        metadata = {}
-        try:
-            start_index = response_text.find("[START_PIPELINE]") + len("[START_PIPELINE]")
-            json_str = response_text[start_index:].strip()
-            if json_str:
-                metadata = json.loads(json_str)
-        except Exception as e:
-            logger.warning(f"Failed to parse Navigator trigger JSON: {e}")
-            
+    if not data:
+        raw_text = await response.text()
+        logger.error(f"Navigator failed JSON validation. Raw text: {raw_text}")
+        return {"status": "error", "message": "Lỗi hệ thống phân loại ngữ cảnh."}
+        
+    decision = data.get("decision")
+    display_message = data.get("message", "")
+        
+    # Check for routing signal
+    if decision in ["FAST_TRACK", "DEEP_TRACK"]:
+        metadata = {"track": decision}
+        
         set_session_state(session_id, "PROCESSING")
         
-        # Clean response message
-        display_message = response_text.split("[START_PIPELINE]")[0].strip()
-        if not display_message:
-            display_message = "Đã nhận đủ thông tin. Hệ thống đang tiến hành kích hoạt Dây chuyền 4 bước..."
+        # Ẩn tin nhắn báo cáo tiến trình theo yêu cầu của user, chỉ để UI hiển thị loading
+        display_message = ""
             
         # CLEAR HISTORY FOR COMPLETED NAVIGATING SESSION
         if chat_col is not None:
@@ -142,6 +140,13 @@ async def run_navigator(session_id: str, message: str, attachment_paths: List[st
             "session_id": session_id,
             "message": display_message,
             "metadata": metadata
+        }
+    else:
+        # Tức là ASK_CLARIFY
+        return {
+            "status": "clarification_needed",
+            "session_id": session_id,
+            "message": display_message
         }
         
     # 4. SAVE NEW CHAT TURNS TO MONGODB (IF NOT TRIGGERING PIPELINE)
@@ -187,65 +192,58 @@ async def run_scanner(document_path: str) -> ExtractionOutput:
         
     if not data:
         raise ValueError("OP_Scanner failed to output valid structured data.")
-    return data
+    return ExtractionOutput(**data)
 
 
-async def run_builder(facts_str: str, playbook_text: str) -> ReportDraft:
+async def run_builders_parallel(facts_str: str, playbook_text: Optional[str] = None) -> Tuple[ReportDraft, ReportDraft]:
     """
-    Bước 2: OP_Builder - Soạn thảo bản nháp báo cáo ban đầu
+    Bước 2: OP_Builder (Fork) - Gọi 2 tiến trình Alpha và Beta chạy song song.
     """
-    logger.info("Running OP_Builder")
-    config = get_builder_config()
+    logger.info("Running OP_Builder (Alpha & Beta in Parallel)")
+    config_alpha = get_builder_alpha_config()
+    config_beta = get_builder_beta_config()
     
-    prompt = (
-        f"Playbook Quy định:\n{playbook_text}\n\n"
-        f"Danh sách dữ kiện trích xuất từ Bước 1:\n{facts_str}\n\n"
-        "Hãy ráp dữ liệu thực tế vào biểu mẫu quy chuẩn, so sánh đối chiếu và soạn thảo bản nháp báo cáo thẩm định."
+    if playbook_text:
+        prompt = (
+            f"Playbook Quy định:\n{playbook_text}\n\n"
+            f"Danh sách dữ kiện trích xuất từ Bước 1:\n{facts_str}\n\n"
+            "Hãy ráp dữ liệu thực tế vào biểu mẫu quy chuẩn, phân tích chi tiết và soạn thảo bản nháp báo cáo."
+        )
+    else:
+        prompt = (
+            f"Danh sách dữ kiện từ Bước 1:\n{facts_str}\n\n"
+            "Hãy sử dụng tri thức mở của bạn để soạn thảo câu trả lời cho người dùng."
+        )
+    
+    async def run_agent(config: LocalAgentConfig) -> ReportDraft:
+        async with Agent(config) as agent:
+            response = await agent.chat(prompt)
+            data = await response.structured_output()
+        if not data:
+            raw_text = await response.text()
+            logger.error(f"Builder failed JSON validation. Raw text: {raw_text}")
+            raise ValueError("Builder failed to output valid data.")
+        return ReportDraft(**data)
+
+    draft_a, draft_b = await asyncio.gather(
+        run_agent(config_alpha),
+        run_agent(config_beta)
     )
-    
-    async with Agent(config) as agent:
-        response = await agent.chat(prompt)
-        data = await response.structured_output()
-        
-    if not data:
-        raise ValueError("OP_Builder failed to output valid structured data.")
-    return data
+    return draft_a, draft_b
 
 
-async def run_builder_update(current_draft: ReportDraft, judge_instructions: str, playbook_text: str) -> ReportDraft:
+async def run_challenger(draft_a: ReportDraft, draft_b: ReportDraft, playbook_text: Optional[str] = None) -> CrossCritique:
     """
-    Builder cập nhật lại bản thảo báo cáo dựa trên chỉ thị của Judge
+    Bước 3: OP_Challenger (Debate) - Phản biện chéo 2 bản nháp
     """
-    logger.info("Running OP_Builder (Updating Draft)")
-    config = get_builder_config()
-    
-    prompt = (
-        f"Playbook Quy định:\n{playbook_text}\n\n"
-        f"Bản thảo báo cáo hiện tại:\n{current_draft.model_dump_json()}\n\n"
-        f"Chỉ thị sửa đổi của Judge:\n{judge_instructions}\n\n"
-        "Hãy cập nhật và sửa đổi bản thảo báo cáo theo đúng chỉ thị trên. Đảm bảo giữ nguyên tọa độ nguồn chính xác."
-    )
-    
-    async with Agent(config) as agent:
-        response = await agent.chat(prompt)
-        data = await response.structured_output()
-        
-    if not data:
-        raise ValueError("OP_Builder failed to output valid updated draft.")
-    return data
-
-
-async def run_challenger(current_draft: ReportDraft, playbook_text: str) -> CritiqueList:
-    """
-    Bước 3A: OP_Challenger - Phản biện bản thảo báo cáo
-    """
-    logger.info("Running OP_Challenger")
+    logger.info("Running OP_Challenger (Cross-Critique)")
     config = get_challenger_config()
     
     prompt = (
-        f"Playbook Quy định:\n{playbook_text}\n\n"
-        f"Bản thảo báo cáo hiện tại:\n{current_draft.model_dump_json()}\n\n"
-        "Hãy tìm các kẽ hở logic, rủi ro pháp lý/nghiệp vụ chưa được giải quyết hoặc điểm mâu thuẫn trong bản thảo."
+        f"Playbook (nếu có):\n{playbook_text if playbook_text else 'Không có'}\n\n"
+        f"Bản nháp A (Alpha - Thiên về An toàn):\n{draft_a.model_dump_json()}\n\n"
+        f"Bản nháp B (Beta - Thiên về Linh hoạt):\n{draft_b.model_dump_json()}\n\n"
+        "Hãy so sánh, đối chiếu và vạch trần lỗ hổng logic/rủi ro của cả 2 bản nháp."
     )
     
     async with Agent(config) as agent:
@@ -253,61 +251,74 @@ async def run_challenger(current_draft: ReportDraft, playbook_text: str) -> Crit
         data = await response.structured_output()
         
     if not data:
-        raise ValueError("OP_Challenger failed to output valid structured data.")
-    return data
+        raise ValueError("OP_Challenger failed to output valid CrossCritique.")
+    return CrossCritique(**data)
 
 
-async def run_judge_decision(current_draft: ReportDraft, critique: CritiqueList, playbook_text: str) -> JudgeDecision:
+async def run_judge_synthesis(draft_a: ReportDraft, draft_b: ReportDraft, critique: CrossCritique, playbook_text: Optional[str] = None) -> Union[ActionCard, ConsultingReport]:
     """
-    Bước 3B: OP_Judge - Đưa ra phán quyết hướng dẫn sửa đổi draft
+    Bước 4: OP_Judge (Join & Synthesize) - Chủ tọa chốt đáp án
     """
-    logger.info("Running OP_Judge (Decision)")
-    config = get_judge_decision_config()
-    
-    # Memory Scrubbing: Judge only gets draft, critique, and playbook excerpt context
-    prompt = (
-        f"Playbook Quy định:\n{playbook_text}\n\n"
-        f"Bản thảo báo cáo hiện tại:\n{current_draft.model_dump_json()}\n\n"
-        f"Danh sách phản biện của Challenger:\n{critique.model_dump_json()}\n\n"
-        "Hãy đánh giá các phản biện của Challenger, quyết định những điểm nào đúng cần Builder sửa và điểm nào vô lý cần bỏ qua. Đưa ra hướng dẫn chi tiết."
-    )
-    
-    async with Agent(config) as agent:
-        response = await agent.chat(prompt)
-        data = await response.structured_output()
-        
-    if not data:
-        raise ValueError("OP_Judge failed to output valid decision.")
-    return data
-
-
-async def run_judge_finalize(final_draft: ReportDraft, audit_trail: List[str], playbook_text: str, deadlock: bool) -> ActionCard:
-    """
-    Judge chốt hạ và đóng gói Action Card kết quả cuối cùng
-    """
-    logger.info("Running OP_Judge (Finalizing Action Card)")
+    logger.info("Running OP_Judge (Synthesis)")
     config = get_judge_config()
     
-    audit_trail_str = "\n".join(audit_trail)
+    if playbook_text:
+        task_instruction = "Hãy đóng vai Chủ tọa, dung hòa các điểm đúng, loại bỏ điểm sai, tuân thủ 3 Tiêu chuẩn Phán quyết (Ưu tiên an toàn, Khách quan, Giải thích lý do) và viết ra Action Card cuối cùng đánh giá rủi ro."
+    else:
+        task_instruction = (
+            "ĐÂY LÀ YÊU CẦU PHÂN TÍCH CHUYÊN SÂU. Đóng vai trò là Chuyên gia Tư vấn Cấp cao, bạn hãy tổng hợp lập luận từ các bên để viết báo cáo cho người dùng theo các quy định NGHIÊM NGẶT sau:\n"
+            "1. TIÊU CHUẨN PHÁN QUYẾT (Cập nhật): Đánh giá rủi ro (An toàn) và Giải pháp (Linh hoạt) một cách công bằng. Nếu rủi ro ở mức nghiêm trọng (vi phạm luật pháp/đạo đức), ưu tiên An toàn. Nếu rủi ro có thể kiểm soát, hãy ưu tiên đưa ra Giải pháp thực tiễn.\n"
+            "2. TẬP TRUNG PHÂN TÍCH (Trường deep_analysis): Trình bày phân tích theo cấu trúc mạch lạc, chia thành các đề mục nhỏ (Tiêu đề in đậm) đại diện cho từng khía cạnh vấn đề. Sử dụng câu văn gãy gọn, diễn đạt nhân quả rõ ràng. ĐƯỢC PHÉP dùng gạch đầu dòng hoặc danh sách để làm nổi bật các luận điểm chính, kết hợp với các đoạn văn ngắn giải thích bối cảnh. Tuyệt đối tránh lối viết lê thê, lý thuyết vĩ mô.\n"
+            "3. ĐỀ XUẤT NGẮN GỌN (Trường recommendations): Đưa ra 3-5 hành động cụ thể, trực diện (Actionable insights). Mỗi đề xuất không quá 2 câu, tập trung vào việc \"Nên làm gì tiếp theo?\".\n"
+            "4. VĂN PHONG: Chuyên nghiệp, hiện đại, mang tính xây dựng. Tuyệt đối không nhắc đến các quy trình nội bộ (OP, Alpha, Beta, Challenger, Draft, Playbook) trong câu trả lời."
+        )
+
     prompt = (
-        f"Playbook Quy định:\n{playbook_text}\n\n"
-        f"Bản thảo báo cáo cuối cùng đã sửa đổi:\n{final_draft.model_dump_json()}\n\n"
-        f"Lịch sử tranh luận chéo (Audit Trail):\n{audit_trail_str}\n\n"
-        f"Trạng thái Deadlock: {deadlock}\n\n"
-        "Hãy đóng gói kết quả thành Thẻ Hành Động ActionCard. Nhớ đính kèm các tọa độ nguồn chính xác cho từng phát hiện."
+        f"Playbook (Hiến pháp tối cao):\n{playbook_text if playbook_text else 'Không có'}\n\n"
+        f"Bản nháp A:\n{draft_a.model_dump_json()}\n\n"
+        f"Bản nháp B:\n{draft_b.model_dump_json()}\n\n"
+        f"Biên bản phản biện chéo:\n{critique.model_dump_json()}\n\n"
+        f"Nhiệm vụ của bạn:\n{task_instruction}"
     )
     
+    # Configure structured output dynamically based on playbook_text
+    config.response_schema = ActionCard if playbook_text else ConsultingReport
+
     async with Agent(config) as agent:
         response = await agent.chat(prompt)
         data = await response.structured_output()
         
     if not data:
-        raise ValueError("OP_Judge failed to output final ActionCard.")
-    return data
+        raise ValueError("OP_Judge failed to output final Report.")
+    
+    return ActionCard(**data) if playbook_text else ConsultingReport(**data)
 
-
-async def execute_pipeline(document_path: str, playbook_text: str, session_id: str = None) -> ActionCard:
+async def execute_fast_track(query: str, session_id: str = None) -> str:
     """
+    Luồng Fast Track: Chỉ sử dụng 1 Agent để trả lời nhanh.
+    Trả về raw markdown string thay vì ActionCard JSON.
+    """
+    logger.info("Running FAST TRACK (Single Agent QA)")
+    config = LocalAgentConfig(
+        model="gemini-2.5-flash",
+        system_instructions="Bạn là OP_Expert, một chuyên gia AI (như ChatGPT). Trả lời CÂU HỎI của người dùng một cách trực tiếp, tự nhiên, và hữu ích. Sử dụng định dạng Markdown.",
+        temperature=0.7,
+        api_key=Config.GEMINI_API_KEY if Config.GEMINI_API_KEY else None
+    )
+    
+    prompt = f"Câu hỏi của tôi là: {query}"
+    
+    async with Agent(config) as agent:
+        response = await agent.chat(prompt)
+        text = await response.text()
+        
+    if not text:
+        return "Xin lỗi, OP_Expert không thể đưa ra câu trả lời lúc này."
+    return text
+
+async def execute_pipeline(document_path: str, playbook_text: Optional[str] = None, session_id: str = None) -> Union[ActionCard, ConsultingReport]:
+    """
+    Chạy toàn bộ luồng 4 tác tử.
     Dây chuyền 3 bước khép kín (Scanner -> Builder -> Challenger/Judge -> Final Action Card)
     Được kiểm soát bởi Semaphore để tránh quá tải đồng thời.
     """
@@ -334,73 +345,44 @@ async def execute_pipeline(document_path: str, playbook_text: str, session_id: s
         facts_list = [f"- Dữ kiện: {item.fact} (Tọa độ: {item.coordinate})" for item in extraction_result.facts]
         facts_str = "\n".join(facts_list)
         valid_coordinates = {item.coordinate for item in extraction_result.facts}
+        # --- BƯỚC 2: LẮP RÁP ĐA CHIỀU (OP_Builder Fork) ---
+        draft_a, draft_b = await run_builders_parallel(facts_str, playbook_text)
         
-        # --- BƯỚC 2: LẮP RÁP (OP_Builder) ---
-        current_draft = await run_builder(facts_str, playbook_text)
+        # --- BƯỚC 3: TRANH BIỆN CHÉO (OP_Challenger) ---
+        critique = await run_challenger(draft_a, draft_b, playbook_text)
         
-        # --- BƯỚC 3: KIỂM CHỨNG & TRANH BIỆN (Challenger vs Judge) ---
-        audit_trail = []
-        deadlock = False
-        
-        for turn in range(1, Config.MAX_DEBATE_TURNS + 1):
-            logger.info(f"Debate Turn {turn}/{Config.MAX_DEBATE_TURNS}")
-            
-            # Challenger phản biện
-            critique = await run_challenger(current_draft, playbook_text)
-            if not critique.critiques:
-                audit_trail.append(f"Vòng {turn}: Challenger không tìm thấy thêm điểm mù hay rủi ro logic nào. Bản thảo được thông qua.")
-                break
-                
-            audit_trail.append(f"Vòng {turn} - Phản biện (OP_Challenger): {critique.overall_critique}")
-            
-            # Judge phân giải
-            decision = await run_judge_decision(current_draft, critique, playbook_text)
-            audit_trail.append(f"Vòng {turn} - Phán quyết (OP_Judge): {decision.builder_instructions}")
-            
-            # Builder cập nhật bản thảo dựa trên phán quyết của Judge
-            current_draft = await run_builder_update(current_draft, decision.builder_instructions, playbook_text)
-            
-            if turn == Config.MAX_DEBATE_TURNS:
-                logger.warning("Debate loop reached max turns (deadlock).")
-                deadlock = True
-                audit_trail.append("Cảnh báo: Cuộc tranh luận đạt giới hạn 3 vòng mà chưa ngã ngũ hoàn toàn. Kích hoạt cờ yêu cầu con người xem xét.")
-
-        # --- BƯỚC 4: KẾT LUẬN & ĐỀ XUẤT ---
-        action_card = await run_judge_finalize(current_draft, audit_trail, playbook_text, deadlock)
+        # --- BƯỚC 4: TỔNG HỢP & PHÁN QUYẾT (OP_Judge Join) ---
+        action_card = await run_judge_synthesis(draft_a, draft_b, critique, playbook_text)
         
         # POKA-YOKE: Traceability Tagging check
         # Loại bỏ các findings và traceability_tags không có tọa độ trùng khớp với Bước 1
-        filtered_findings = []
-        filtered_tags = []
-        
-        for tag in action_card.traceability_tags:
-            # Chuẩn hóa tọa độ để so khớp
-            clean_coordinate = tag.coordinate.strip()
-            if clean_coordinate in valid_coordinates:
-                filtered_tags.append(tag)
-                # Tìm finding tương ứng
-                filtered_findings.append(tag.point)
+        if playbook_text:
+            filtered_findings = []
+            filtered_tags = []
+            
+            for tag in action_card.traceability_tags:
+                # Chuẩn hóa tọa độ để so khớp
+                clean_coordinate = tag.coordinate.strip()
+                if clean_coordinate in valid_coordinates:
+                    filtered_tags.append(tag)
+                    # Tìm finding tương ứng
+                    filtered_findings.append(tag.point)
+                else:
+                    logger.warning(f"Poka-Yoke: Loại bỏ kết luận không có tọa độ trích xuất hợp lệ: {tag.point} ({tag.coordinate})")
+            
+            # Cập nhật lại các trường dữ liệu của Action Card sau khi lọc
+            if filtered_tags:
+                action_card.traceability_tags = filtered_tags
+                action_card.findings = filtered_findings
             else:
-                logger.warning(f"Poka-Yoke: Loại bỏ kết luận không có tọa độ trích xuất hợp lệ: {tag.point} ({tag.coordinate})")
+                # Nếu tất cả tọa độ bị loại bỏ (hallucination), ghi nhận lỗi
+                logger.error("Poka-Yoke Warning: Mọi tọa độ trong ActionCard đều không hợp lệ.")
+                action_card.findings = ["Phát hiện lỗi ảo giác (Hallucination) từ mô hình: Các kết luận thiếu bằng chứng tọa độ trích xuất."]
+                action_card.traceability_tags = []
+                action_card.human_review_required = True
                 
-        # Cập nhật lại các trường dữ liệu của Action Card sau khi lọc
-        if filtered_tags:
-            action_card.traceability_tags = filtered_tags
-            action_card.findings = filtered_findings
-        else:
-            # Nếu tất cả tọa độ bị loại bỏ (hallucination), ghi nhận lỗi
-            logger.error("Poka-Yoke Warning: Mọi tọa độ trong ActionCard đều không hợp lệ.")
-            action_card.findings = ["Phát hiện lỗi ảo giác (Hallucination) từ mô hình: Các kết luận thiếu bằng chứng tọa độ trích xuất."]
-            action_card.traceability_tags = []
-            action_card.human_review_required = True
-            
-        # Đánh dấu cần duyệt thủ công nếu rủi ro HIGH hoặc deadlock
-        if action_card.risk_level == "HIGH" or deadlock:
-            action_card.human_review_required = True
-            
-        if session_id:
-            # Reset trạng thái về NAVIGATING sau khi xử lý xong
-            set_session_state(session_id, "NAVIGATING")
-            
+            if action_card.risk_level == "HIGH":
+                action_card.human_review_required = True
+
         logger.info(f"Pipeline completed successfully. Action Card title: {action_card.title}")
         return action_card
